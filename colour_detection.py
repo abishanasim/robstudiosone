@@ -13,23 +13,24 @@ class Color3DDetector(Node):
     def __init__(self):
         super().__init__('color_3d_detector')
 
-        # --------- Parameters (override via --ros-args -p ...) ----------
+        # --------- Parameters ----------
         self.declare_parameter('rgb_topic', '/camera/image')
         self.declare_parameter('depth_topic', '/camera/depth/image')
         self.declare_parameter('info_topic', '/camera/camera_info')  # optional
 
         # Colors to evaluate every frame (winner is published on /detected_color)
-        self.declare_parameter('colors', 'green,yellow')             # e.g. "green,yellow,red"
-        self.declare_parameter('min_area', 20)                       # px
+        self.declare_parameter('colors', 'green,yellow,red')
+        self.declare_parameter('min_area', 20)                        # px
         self.declare_parameter('show_debug', True)
-        self.declare_parameter('min_coverage', 0.005)               # fraction of image for "winner" color
+        self.declare_parameter('min_coverage', 0.005)                 # fraction of image for "winner" color
 
-        # Infection rule: if yellow coverage >= threshold => infected
-        self.declare_parameter('yellow_infected_threshold', 0.001)   # 0.1% of image
+        # Independent rules:
+        self.declare_parameter('yellow_infected_threshold', 0.001)    # 0.1% of image -> "infected"
+        self.declare_parameter('red_remove_threshold',      0.001)    # 0.1% of image -> "remove"
 
-        # NEW: print throttling
-        self.declare_parameter('print_every_n', 10)                  # log every N frames (0/1 = every frame)
-        self.declare_parameter('log_period_sec', 0.0)                # min seconds between logs (0 = disabled)
+        # Print throttling
+        self.declare_parameter('print_every_n', 10)                   # log every N frames
+        self.declare_parameter('log_period_sec', 0.0)                 # min secs between logs (0 = off)
 
         self.rgb_topic    = self.get_parameter('rgb_topic').value
         self.depth_topic  = self.get_parameter('depth_topic').value
@@ -41,6 +42,7 @@ class Color3DDetector(Node):
         self.show_debug   = bool(self.get_parameter('show_debug').value)
         self.min_coverage = float(self.get_parameter('min_coverage').value)
         self.yellow_thresh= float(self.get_parameter('yellow_infected_threshold').value)
+        self.red_thresh   = float(self.get_parameter('red_remove_threshold').value)
 
         # Throttle settings
         self.print_every_n = max(1, int(self.get_parameter('print_every_n').value))
@@ -62,7 +64,6 @@ class Color3DDetector(Node):
             'yellow': [(np.array([ 18,  20,  20]), np.array([ 40, 255, 255]))],
         }
 
-        # Small morphology so small blobs survive
         self.kernel = np.ones((3, 3), np.uint8)
 
         qos_sensor = QoSProfile(
@@ -79,10 +80,14 @@ class Color3DDetector(Node):
         self.pub_point   = self.create_publisher(PointStamped, '/detected_color_point', 10)
         self.pub_debug   = self.create_publisher(Image,  '/debug/color_mask', 10)
 
-        # Infection decision publishers
-        self.pub_infected = self.create_publisher(Bool,     '/tree_infected', 10)
-        self.pub_health   = self.create_publisher(String,   '/tree_health', 10)
-        self.pub_conf     = self.create_publisher(Float32,  '/tree_infected_conf', 10)
+        # Independent status publishers
+        self.pub_y_flag  = self.create_publisher(Bool,    '/tree_yellow_flag', 10)
+        self.pub_y_stat  = self.create_publisher(String,  '/tree_yellow_status', 10)   # "infected"/"healthy"
+        self.pub_y_conf  = self.create_publisher(Float32, '/tree_yellow_conf', 10)
+
+        self.pub_r_flag  = self.create_publisher(Bool,    '/tree_red_flag', 10)
+        self.pub_r_stat  = self.create_publisher(String,  '/tree_red_status', 10)      # "remove"/"ok"
+        self.pub_r_conf  = self.create_publisher(Float32, '/tree_red_conf', 10)
 
         self.get_logger().info(
             f"Listening: {self.rgb_topic} + {self.depth_topic} (info: {self.info_topic})"
@@ -107,24 +112,32 @@ class Color3DDetector(Node):
 
     def cb_rgb(self, msg: Image):
         self._frame_idx += 1
-
         bgr = self._to_bgr(msg)
         if bgr is None:
             return
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-        # ---- Compute yellow coverage FIRST (infection rule) ----
+        # ---- Independent decisions ----
         yellow_cov, yellow_mask = self._coverage_for_color(hsv, 'yellow')
-        infected = yellow_cov >= self.yellow_thresh
-        if self._should_log():
-            if infected:
-                self.get_logger().info(f"[INFECTED] yellow coverage={yellow_cov:.4f} >= {self.yellow_thresh:.4f}")
-            else:
-                self.get_logger().info(f"[healthy] yellow coverage={yellow_cov:.4f} < {self.yellow_thresh:.4f}")
+        red_cov,    red_mask    = self._coverage_for_color(hsv, 'red')
 
-        self.pub_infected.publish(Bool(data=infected))
-        self.pub_health.publish(String(data='infected' if infected else 'healthy'))
-        self.pub_conf.publish(Float32(data=float(yellow_cov)))
+        # Yellow status
+        y_flag = yellow_cov >= self.yellow_thresh
+        y_status = 'infected' if y_flag else 'healthy'
+        self.pub_y_flag.publish(Bool(data=y_flag))
+        self.pub_y_stat.publish(String(data=y_status))
+        self.pub_y_conf.publish(Float32(data=float(yellow_cov)))
+        if self._should_log():
+            self.get_logger().info(f"[YELLOW {y_status}] coverage={yellow_cov:.4f} (thr={self.yellow_thresh:.4f})")
+
+        # Red status
+        r_flag = red_cov >= self.red_thresh
+        r_status = 'remove' if r_flag else 'ok'
+        self.pub_r_flag.publish(Bool(data=r_flag))
+        self.pub_r_stat.publish(String(data=r_status))
+        self.pub_r_conf.publish(Float32(data=float(red_cov)))
+        if self._should_log():
+            self.get_logger().info(f"[RED {r_status}] coverage={red_cov:.4f} (thr={self.red_thresh:.4f})")
 
         # ---- Multi-color detection (for /detected_color) ----
         best = None  # (score, name, coverage, area, cnt, cx, cy, mask)
@@ -133,17 +146,15 @@ class Color3DDetector(Node):
                 if self._should_log():
                     self.get_logger().warn(f"Unknown color '{name}' in 'colors' param; skipping")
                 continue
-
             coverage, mask, cnt_main, area, cx, cy = self._analyze_color(hsv, name)
-
-            # Combined score: prioritize coverage (scaled), add area if valid
             score = 1e5 * coverage + (area if area >= self.min_area else 0.0)
             if best is None or score > best[0]:
                 best = (score, name, coverage, area, cnt_main, cx, cy, mask)
 
         if best is None or best[2] < self.min_coverage:
             self.pub_color.publish(String(data='none'))
-            dbg = yellow_mask if infected else np.zeros(hsv.shape[:2], dtype=np.uint8)
+            # Show yellow mask if yellow flagged, else red if red flagged, else empty
+            dbg = yellow_mask if y_flag else (red_mask if r_flag else np.zeros(hsv.shape[:2], np.uint8))
             self._maybe_publish_debug(dbg)
             return
 
@@ -152,7 +163,6 @@ class Color3DDetector(Node):
         if self._should_log():
             msg_extra = f" @{cx},{cy}" if (cx is not None and cy is not None) else ""
             self.get_logger().info(f"[{name.upper()}] coverage={coverage:.3f} area={int(area)}{msg_extra}")
-
             if cx is not None and cy is not None:
                 b, g, r = bgr[cy, cx].tolist()
                 H, S, V = hsv[cy, cx].tolist()
@@ -165,16 +175,14 @@ class Color3DDetector(Node):
 
         self.pub_color.publish(String(data=name))
 
-        dbg_mask = yellow_mask if infected else mask
+        # Debug priority: yellow if flagged, else red if flagged, else winner
+        dbg_mask = yellow_mask if y_flag else (red_mask if r_flag else mask)
         self._maybe_publish_debug(dbg_mask, cnt_main, (cx, cy) if (cx is not None and cy is not None) else None)
 
     # ---------------- Helpers ----------------
     def _should_log(self) -> bool:
-        """Return True if we should print this frame (frame- or time-throttled)."""
-        # Frame-based throttle
         if (self._frame_idx % self.print_every_n) != 0:
             return False
-        # Time-based throttle
         if self.log_period_sec > 0.0:
             now = self.get_clock().now()
             if self._last_log_time is None:
@@ -187,7 +195,6 @@ class Color3DDetector(Node):
         return True
 
     def _coverage_for_color(self, hsv, name):
-        """Return (coverage, mask) for a single color."""
         if name not in self.hsv_ranges:
             return 0.0, np.zeros(hsv.shape[:2], dtype=np.uint8)
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
@@ -198,7 +205,6 @@ class Color3DDetector(Node):
         return coverage, mask
 
     def _analyze_color(self, hsv, name):
-        """Return (coverage, mask, cnt_main, area, cx, cy) for a color."""
         coverage, mask = self._coverage_for_color(hsv, name)
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         area = 0.0
@@ -222,7 +228,7 @@ class Color3DDetector(Node):
         if not (np.isfinite(Z) and Z > 0.0):
             return
         pt = PointStamped()
-        pt.header = rgb_msg.header  # same timestamp/frame as RGB
+        pt.header = rgb_msg.header
         if self.K is not None:
             fx, fy, cx0, cy0 = self.K
             X = (cx - cx0) * Z / fx
@@ -237,7 +243,7 @@ class Color3DDetector(Node):
             enc = msg.encoding.lower()
             if enc == 'bgr8':
                 return self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            if enc == 'rgb8':  # your sim uses rgb8
+            if enc == 'rgb8':
                 rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
                 return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
             if enc in ('rgba8', 'bgra8'):
