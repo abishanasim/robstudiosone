@@ -88,15 +88,58 @@ class Color3DDetector(Node):
         self.get_logger().info(f"Scan bridge: req={self.req_topic} rep={self.rep_topic}")
         self.get_logger().info(f"Auto publish: on={self.auto_on} hz={self.auto_hz:.2f} name='{self.auto_name}'")
 
-        # HSV ranges
+        # ===== Calibrated HSV for SDF pure colors =====
+        # OpenCV HSV: H∈[0..180], S,V∈[0..255]
+        # Global vivid floors to reject bark/ground & lighting washout
+        self.declare_parameter('s_min', 175)
+        self.declare_parameter('v_min', 170)
+        S_MIN = int(self.get_parameter('s_min').value)
+        V_MIN = int(self.get_parameter('v_min').value)
+
+        def band(name, h_lo, h_hi, s_lo=S_MIN, v_lo=V_MIN):
+            """Create a tunable band with per-color params (tweak via ROS params at launch)."""
+            self.declare_parameter(f'{name}_h_lo', h_lo)
+            self.declare_parameter(f'{name}_h_hi', h_hi)
+            self.declare_parameter(f'{name}_s_min', s_lo)
+            self.declare_parameter(f'{name}_v_min', v_lo)
+            H_LO = int(self.get_parameter(f'{name}_h_lo').value)
+            H_HI = int(self.get_parameter(f'{name}_h_hi').value)
+            S_LO = int(self.get_parameter(f'{name}_s_min').value)
+            V_LO = int(self.get_parameter(f'{name}_v_min').value)
+            return (np.array([H_LO, S_LO, V_LO]), np.array([H_HI, 255, 255]))
+
+        # Canonical hues from SDF RGBA:
+        # Yellow: H≈30 → 26..34 (tight)
+        Y_BANDS = [band('yellow', 26, 34, s_lo=180, v_lo=180)]
+
+        # Green: H≈60 → 56..66 (tight, moved away from yellow)
+        G_BANDS = [band('green', 56, 66, s_lo=185, v_lo=180)]
+
+        # Blue: H≈120 → 114..126 (tight)
+        B_BANDS = [band('blue', 114, 126, s_lo=175, v_lo=170)]
+
+        # Red: H≈0 and wrap near 180 → two narrow bands
+        R_BANDS = [
+            band('red1', 0,   6,   s_lo=190, v_lo=180),  # near 0°
+            band('red2', 174, 180, s_lo=190, v_lo=180),  # wrap near 180°
+        ]
+
+        # Black: hue-agnostic, very low value
+        self.declare_parameter('black_s_max', 60)
+        self.declare_parameter('black_v_max', 55)
+        B_S_MAX = int(self.get_parameter('black_s_max').value)
+        B_V_MAX = int(self.get_parameter('black_v_max').value)
+        BLACK_BANDS = [(np.array([0, 0, 0]), np.array([180, B_S_MAX, B_V_MAX]))]
+
         self.hsv_ranges = {
-            'red':    [(np.array([  0, 70,  35]), np.array([ 10,255,255])),
-                       (np.array([170, 70,  35]), np.array([180,255,255]))],
-            'green':  [(np.array([ 30, 25,  25]), np.array([ 95,255,255]))],
-            'yellow': [(np.array([ 18, 20,  20]), np.array([ 40,255,255]))],
-            'blue':   [(np.array([100, 50,  40]), np.array([130,255,255]))],
-            'black':  [(np.array([  0,  0,   0]), np.array([180,255,  50]))],
+            'red':    R_BANDS,
+            'yellow': Y_BANDS,
+            'green':  G_BANDS,
+            'blue':   B_BANDS,
+            'black':  BLACK_BANDS,
         }
+
+        # Keep only requested colors (or all if none specified)
         self.colors = [c for c in requested if c in self.hsv_ranges] or list(self.hsv_ranges.keys())
 
         self.status_map = {
