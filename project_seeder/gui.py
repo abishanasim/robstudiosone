@@ -279,14 +279,25 @@ _cam_imgtk = None  # keep a reference to avoid GC
 def world_to_canvas_xy(x, y):
     return origin_px + x*pixels_per_meter, origin_py - y*pixels_per_meter
 
-# ---------- UI construction split into functions ----------
+# ---------- Checkerboard redraw (resizable) ----------
 def draw_checkerboard():
     grid_canvas.delete("all")
-    h = int(grid_canvas['height']); w = int(grid_canvas['width'])
-    for i in range(0, h, 12):
-        for j in range(0, w, 12):
-            color = "#122018" if ((i//12 + j//12) % 2 == 0) else "#16271f"
-            grid_canvas.create_rectangle(j, i, j+12, i+12, fill=color, outline="#1c2f26")
+    # Use current size so it scales with window
+    w = max(1, grid_canvas.winfo_width())
+    h = max(1, grid_canvas.winfo_height())
+    cell = 12  # fixed cell size for crisp grid
+    for i in range(0, h, cell):
+        for j in range(0, w, cell):
+            color = "#122018" if ((i//cell + j//cell) % 2 == 0) else "#16271f"
+            grid_canvas.create_rectangle(j, i, j+cell, i+cell, fill=color, outline="#1c2f26")
+
+def _on_canvas_resize(event=None):
+    """Recenter origin and redraw grid + dots on resize."""
+    global origin_px, origin_py
+    origin_px = grid_canvas.winfo_width() / 2.0
+    origin_py = grid_canvas.winfo_height() / 2.0
+    draw_checkerboard()
+    draw_poses_on_grid()
 
 def highlight_one(row, idx1):
     global PREV_SELECTED_ID
@@ -312,7 +323,8 @@ def draw_poses_on_grid():
                                       fill=fill, outline=POSE_OUTLINE, width=1, tags=("pose_dot",))
         ROW_MAP[1].append(cid)
     combo.configure(values=[f"Row 1 tree {i+1}" for i in range(len(ROW_MAP[1]))])
-    selected.set("Row 1 tree 1")
+    if not selected.get():
+        selected.set("Row 1 tree 1")
     feedback.config(text=f"Loaded {len(ROW_MAP[1])} trees")
 
 def move_seeder():
@@ -327,7 +339,7 @@ def emergency_stop(event=None):
     global estopped
     if estopped: return
     estopped = True
-    feedback.config(text="EMERGENCY STOP  Husky halted")
+    feedback.config(text="EMERGENCY STOP   Husky halted")
     move_btn.state(["disabled"]); load_btn.state(["disabled"]); combo.configure(state="disabled")
     estop_canvas.itemconfig(circle, fill=RED_DARK)
     if ROS: ROS.publish(True)
@@ -337,7 +349,7 @@ def resume_from_estop():
     global estopped
     if not estopped: return
     estopped = False
-    feedback.config(text="RESUME  Husky allowed to move")
+    feedback.config(text="RESUME  Husky allowed to move")
     move_btn.state(["!disabled"]); load_btn.state(["!disabled"]); combo.configure(state=["readonly"])
     estop_canvas.itemconfig(circle, fill=RED)
     if ROS: ROS.publish(False)
@@ -363,7 +375,6 @@ def _tick_camera():
             cam_label.config(image=_cam_imgtk, text="", width=CAM_W, height=CAM_H)
             cam_label.place(x=(CAM_W-new_w)//2, y=(CAM_H-new_h)//2)
         else:
-            # placeholder (UPDATED)
             cam_label.config(image="", text="No camera", fg=SUBFG, bg=PANEL, width=CAM_W, height=CAM_H)
             cam_label.place(x=0, y=0)
     except Exception:
@@ -387,17 +398,23 @@ def build_main_ui():
     style.configure("Dark.TButton", background=BTN_BG, foreground=FG, padding=8)
     style.map("Dark.TButton", background=[("active", ACCENT)])
 
-    left = ttk.Frame(root, style="Dark.TFrame", padding=12); left.pack(side="left", fill="y")
+    left = ttk.Frame(root, style="Dark.TFrame", padding=12)
+    left.pack(side="left", fill="y")
 
-    canvas_w = 500; canvas_h = 500
-    grid_canvas = tk.Canvas(root, width=canvas_w, height=canvas_h, bg=BG, highlightthickness=0)
-    grid_canvas.pack(side="right", padx=10, pady=10)
+    # ---- Resizable canvas (fills remaining space) ----
+    grid_canvas = tk.Canvas(root, bg=BG, highlightthickness=0)
+    grid_canvas.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
-    draw_checkerboard()
-
-    origin_px = canvas_w/2; origin_py = canvas_h/2
+    # Initial layout
+    root.update_idletasks()
+    origin_px = grid_canvas.winfo_width() / 2.0
+    origin_py = grid_canvas.winfo_height() / 2.0
     global pixels_per_meter
     pixels_per_meter = 12 / METERS_PER_CELL
+
+    draw_checkerboard()
+    # Redraw when the canvas changes size
+    grid_canvas.bind("<Configure>", _on_canvas_resize)
 
     # Controls
     selected = tk.StringVar(value="Row 1 tree 1")
@@ -416,13 +433,13 @@ def build_main_ui():
     cam_label = tk.Label(cam_frame, bg=PANEL)
     cam_label.place(x=0, y=0)
 
-    # Buttons (shifted down one row)
+    # Buttons
     move_btn = ttk.Button(left, text="Move", style="Dark.TButton", command=move_seeder)
     load_btn = ttk.Button(left, text="Load Poses", style="Dark.TButton", command=draw_poses_on_grid)
     move_btn.grid(row=3, column=0, sticky="w", pady=(0,8))
     load_btn.grid(row=3, column=1, sticky="w", pady=(0,8))
 
-    # E-STOP & Resume (shifted)
+    # E-STOP & Resume
     estop_canvas = tk.Canvas(left, width=110, height=110, bg=PANEL, highlightthickness=0)
     estop_canvas.grid(row=4, column=0, columnspan=2, pady=(6,0))
     circle = estop_canvas.create_oval(8,8,102,102, fill=RED, outline=RED_DARK, width=4)
@@ -453,7 +470,7 @@ def boot_sequence(splash: Splash):
                 except Exception as e:
                     print(f"[Startup] {msg} -> {e}")
             if steps:
-                root.after(450, steps.pop(0))  # slower cadence for a beefier splash
+                root.after(450, steps.pop(0))
             else:
                 def show_main():
                     root.deiconify()
