@@ -29,7 +29,8 @@ setup(
     'console_scripts': [
         'tree_goals = project_seeder.tree_goals:main',
         'colour_detection = project_seeder.colour_detection:main',
-        'husky_seeder = project_seeder.husky_seeder:main'
+        'manual_nav = project_seeder.manual_nav:main',
+        'gui = project_seeder.gui:main',
     ],
 },
 
