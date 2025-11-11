@@ -1,0 +1,12 @@
+tree_name,health_status,infection,chosen_solution,dose_ml
+
+Tree ID: Pine 1
+Health Status: Healthy
+Dose (ml): 0.00
+
+Tree ID: Pine 2
+Health Status: Tree Infected
+Infection: Cinnamon Fungus
+Chosen Solution: Phosphite injections
+Dose (ml): 9.20
+
