@@ -29,7 +29,7 @@ ros2 run project_seeder tree_goals
 ros2 run project_seeder colour_detection
 ros2 run project_seeder gui
 
-* Additional Steps * 
+---- Additional Steps ----
 6. Building lines
 
 cd /home/student/41068_ws
