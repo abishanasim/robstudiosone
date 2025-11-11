@@ -1,9 +1,6 @@
-Time to get jiggy 
+Welcome to project seeder 
 
-- tsting of opencv
-- implementation of rgb camera and given opencv values 
-
-1. Downloading of open cv
+1. Downloading 
 
 sudo apt update
 sudo apt install python3-opencv
@@ -19,10 +16,17 @@ source ~/41068_ws/install/setup.bash
 
 ros2 launch 41068_ignition_bringup 41068_ignition.launch.py slam:=true nav2:=true rviz:=true world:=seeder
 
-4. Run the node
+3. Ran through GUI (can be run as separate nodes)
+- Autonomous mode
+- Manual mode 
+
+4. Run the individual node
 cd 41068_ws
 ros2 run project_seeder tree_goals
 ros2 run project_seeder colour_detection
+ros2 run project_seeder gui
+
+
 
 5. Building lines
 
@@ -33,4 +37,3 @@ source install/setup.bash
 colcon build --packages-select project_seeder
 . install/setup.bash
 
-ros2 launch slam_toolbox online_async_launch.py
