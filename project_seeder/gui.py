@@ -580,11 +580,11 @@ def _on_combo_selected(event=None):
     if _selection_allowed():
         send_manual_control()
     else:
-        feedback.config(text="Manual is off or E-STOP is active  cant move yet.")
+        feedback.config(text="Manual is off or E-STOP is active cannot move yet.")
 
 def _on_canvas_click(event):
     if not _selection_allowed():
-        feedback.config(text="Manual is off or E-STOP is active  cant move yet.")
+        feedback.config(text="Manual is off or E-STOP is active cannot move yet.")
         return
     x, y = event.x, event.y
     best_i, best_d2 = None, 10_000_000
